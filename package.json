@@ -1,0 +1,18 @@
+{
+    "name": "hive-auth-wrapper",
+    "version": "0.8.1",
+    "description": "Hive Authentication Services WebSocket Wrapper",
+    "main": "has-wrapper.js",
+    "author": "arcange",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/VIM-Arcange/hive-auth-wrapper.git"
+    },
+    "homepage": "https://docs.hiveauth.com",
+    "dependencies": {
+        "assert": "^2.0.0",
+        "crypto-js": "^4.1.1",
+        "uuid": "^8.3.2"
+    }
+}
