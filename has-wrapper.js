@@ -19,6 +19,9 @@ const CMD = {
     CHALLENGE_ACK:  "challenge_ack",
     CHALLENGE_NACK: "challenge_nack",
     CHALLENGE_ERR:  "challenge_err",
+    ATTACH_REQ:     "attach_req",
+    ATTACH_ACK:     "attach_ack",
+    ATTACH_NACK:    "attach_nack",
     ERROR:          "error"
 }
 
@@ -26,7 +29,7 @@ const DELAY_CHECK_WEBSOCKET = 250                 // Delay between checking WebS
 const DELAY_CHECK_REQUESTS = 250                  // Delay between checking HAS events (in milliseconds)
 const HAS_SERVER = "wss://hive-auth.arcange.eu/"  // Default HAS infrastructure host
 
-const HAS_PROTOCOL = 0.7
+const HAS_PROTOCOL = 0.8
 const HAS_options = {
   host: HAS_SERVER,
   auth_key_secret: undefined
@@ -83,6 +86,8 @@ function startWebsocket() {
         case CMD.CHALLENGE_ACK:
         case CMD.CHALLENGE_NACK:
         case CMD.CHALLENGE_ERR:
+        case CMD.ATTACH_ACK:
+        case CMD.ATTACH_NACK:
         case CMD.ERROR:
           requests.push(message)
           break
@@ -377,6 +382,39 @@ export default {
             const error = CryptoJS.AES.decrypt(req_err.error, auth.key).toString(CryptoJS.enc.Utf8)
             reject(new Error(error))
           }
+        }
+        // check if request expired
+        if(expire <= Date.now()) {
+          clearInterval(wait)
+          reject(new Error("expired"))
+        }
+      },DELAY_CHECK_REQUESTS)
+    })
+  },
+  // uuid:string (required) - an existing request id
+  // cbWait is an (optional) callback method to notify the app about pending request
+  attach: function(uuid) {
+    return new Promise(async (resolve,reject) => {
+      assert(uuid && typeof(uuid)=="string","missing or invalid uuid")
+      assert((await isConnected()),"not connected to server")
+      // Send the attach request to the HAS
+      const payload = { cmd:CMD.ATTACH_REQ, uuid}
+      send(JSON.stringify(payload))
+      let expire = Date.now() + HAS_timeout
+      // Wait for the reply from the HAS
+      const wait = setInterval(() => {
+        // Confirmation received, check if we got a request result
+        const req_ack = getRequest(CMD.ATTACH_ACK, uuid)
+        const req_nack = getRequest(CMD.ATTACH_NACK, uuid)
+        if(req_ack) {
+        // attach success
+          clearInterval(wait)
+          if(trace) console.log(`attach_ack found: ${JSON.stringify(req_ack)}`)
+          resolve(req_ack)
+        } else if(req_nack) {
+          // attach failed
+          clearInterval(wait)
+          reject(req_nack)
         }
         // check if request expired
         if(expire <= Date.now()) {
