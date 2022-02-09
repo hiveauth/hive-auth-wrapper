@@ -25,6 +25,7 @@ const CMD = {
     ERROR:          "error"
 }
 
+const DELAY_CLEAN_PENDINGS = 30 * 1000            // Addidional delay before discarding expired pending requests (in milliseconds)
 const DELAY_CHECK_WEBSOCKET = 250                 // Delay between checking WebSocket connection (in milliseconds)
 const DELAY_CHECK_REQUESTS = 250                  // Delay between checking HAS events (in milliseconds)
 const HAS_SERVER = "wss://hive-auth.arcange.eu/"  // Default HAS infrastructure host
@@ -38,18 +39,23 @@ const HAS_options = {
 let HAS_connected = false
 let HAS_timeout = 60*1000 // default request expiration timeout - 60 seconds
 
-let requests = []
+let messages = []
+let pendings = []
 let wsHAS = undefined
 let trace = false
 
-function getRequest(type, uuid=undefined) {
+function clearPendings(uuid=undefined) {
+  pendings = pendings.filter(o => o.uuid != uuid && o.expire + DELAY_CLEAN_PENDINGS >= Date.now())
+}
+
+function getMessage(type, uuid=undefined) {
   // Clean expired requests
-  requests = requests.filter(o => !o.expire || o.expire >= Date.now())
+  messages = messages.filter(o => !o.expire || o.expire >= Date.now())
   // Search for first matching request
-  const req = requests.find(o => o.cmd==type && (uuid ? o.uuid==uuid : true))
+  const req = messages.find(o => o.cmd==type && (uuid ? o.uuid==uuid : true))
   // If any found, remove it from the array
   if(req) {
-    requests = requests.filter(o => !(o.cmd==type && (uuid ? o.uuid==req.uuid : true)))
+    messages = messages.filter(o => !(o.cmd==type && (uuid ? o.uuid==req.uuid : true)))
   }
   return req
 }
@@ -89,7 +95,7 @@ function startWebsocket() {
         case CMD.ATTACH_ACK:
         case CMD.ATTACH_NACK:
         case CMD.ERROR:
-          requests.push(message)
+          messages.push(message)
           break
         }
     }
@@ -119,9 +125,13 @@ async function isConnected() {
     }
     startWebsocket()
     if(!HAS_connected) {
-        do {
+      do {
         await sleep(DELAY_CHECK_WEBSOCKET)
       } while(wsHAS && wsHAS.readyState==0) // 0 = Connecting
+      clearPendings()
+      for(pending of pendings) {
+        attach(pending.uuid)
+      }
     }
     return HAS_connected
   } else {
@@ -202,26 +212,29 @@ export default {
       let uuid = undefined
       const wait = setInterval(() => {
         if(!uuid) {
-          const req = getRequest(CMD.AUTH_WAIT)
+          const req = getMessage(CMD.AUTH_WAIT)
           if(req) {
             if(trace) console.log(`auth_wait found: ${JSON.stringify(req)}`)
             uuid = req.uuid
             expire = req.expire
+            // Add to pending requests
+            pendings.push({uuid:uuid,expire:expire})
             // provide the PKSA encryption key the App for it to build the auth_payload
             req.key = auth_key
             // call app back to notify about pending request and authentication payload
             if(cbWait) cbWait(req)
           }
         } else {
-          const req_ack = getRequest(CMD.AUTH_ACK, uuid)
-          const req_nack = getRequest(CMD.AUTH_NACK, uuid)
-          const req_err = getRequest(CMD.AUTH_ERR, uuid)
+          const req_ack = getMessage(CMD.AUTH_ACK, uuid)
+          const req_nack = getMessage(CMD.AUTH_NACK, uuid)
+          const req_err = getMessage(CMD.AUTH_ERR, uuid)
           if(req_ack) {
-              try{
+            try{
                 // Try to decrypt and parse payload data
                 req_ack.data = JSON.parse(CryptoJS.AES.decrypt(req_ack.data, auth_key).toString(CryptoJS.enc.Utf8))
                 // authentication approved
                 clearInterval(wait)
+                clearPendings(uuid)
                 if(trace) console.log(`auth_ack found: ${JSON.stringify(req_ack)}`)
                 // update credentials with PKSA token/expiration and PKSA enryption key
                 auth.token = req_ack.data.token
@@ -235,16 +248,21 @@ export default {
             // validate uuid
             if(uuid==CryptoJS.AES.decrypt(req_nack.data, auth_key).toString(CryptoJS.enc.Utf8)) {
               // authentication rejected
+              clearInterval(wait)
+              clearPendings(uuid)
               reject(req_nack)
             }
           } else if(req_err) {
             // authentication error
+            clearInterval(wait)
+            clearPendings(uuid)
             reject(req_err)
           }
         }
         // Check if authentication request has expired
         if(expire <= Date.now()) {
           clearInterval(wait)
+          if(uuid) clearPendings(uuid)
           reject(new Error("expired"))
         }
       },DELAY_CHECK_REQUESTS)
@@ -277,32 +295,37 @@ export default {
         if(!uuid) {
           // We did not received the sign_wait confirmation yet from the HAS
           // check if we got one
-          const req = getRequest(CMD.SIGN_WAIT)
+          const req = getMessage(CMD.SIGN_WAIT)
           if(req) {
             // confirmation received
             if(trace) console.log(`sign_wait found: ${JSON.stringify(req)}`)
             uuid = req.uuid
             expire = req.expire
+            // Add to pending requests
+            pendings.push({uuid:uuid,expire:expire})
             // call back app to notify about pending request
             if(cbWait) cbWait(req)
           }
         } else {
           // Confirmation received, check if we got a request result
-          const req_ack = getRequest(CMD.SIGN_ACK, uuid)
-          const req_nack = getRequest(CMD.SIGN_NACK, uuid)
-          const req_err = getRequest(CMD.SIGN_ERR, uuid)
+          const req_ack = getMessage(CMD.SIGN_ACK, uuid)
+          const req_nack = getMessage(CMD.SIGN_NACK, uuid)
+          const req_err = getMessage(CMD.SIGN_ERR, uuid)
           if(req_ack) {
             // request approved
             if(trace) console.log(`sign_ack found: ${JSON.stringify(req_ack)}`)
             clearInterval(wait)
+            clearPendings(uuid)
             resolve(req_ack)
           } else if(req_nack) {
             // request rejected
             clearInterval(wait)
+            clearPendings(uuid)
             reject(req_nack)
           } else if(req_err) {
             // request error
             clearInterval(wait)
+            clearPendings(uuid)
             // Decrypt received error message
             const error = CryptoJS.AES.decrypt(req_err.error, auth.key).toString(CryptoJS.enc.Utf8)
             reject(new Error(error))
@@ -311,6 +334,7 @@ export default {
         // check if request expired
         if(expire <= Date.now()) {
           clearInterval(wait)
+          if(uuid) clearPendings(uuid)
           reject(new Error("expired"))
         }
       },DELAY_CHECK_REQUESTS)
@@ -345,20 +369,22 @@ export default {
         if(!uuid) {
           // We did not received the challenge_wait confirmation yet from the HAS
           // check if we got one
-          const req = getRequest(CMD.CHALLENGE_WAIT)
+          const req = getMessage(CMD.CHALLENGE_WAIT)
           if(req) {
             // confirmation received
             if(trace) console.log(`challenge_wait found: ${JSON.stringify(req)}`)
             uuid = req.uuid
             expire = req.expire
+            // Add to pending requests
+            pendings.push({uuid:uuid,expire:expire})
             // call back app to notify about pending request
             if(cbWait) cbWait(req)
           }
         } else {
           // Confirmation received, check if we got a request result
-          const req_ack = getRequest(CMD.CHALLENGE_ACK, uuid)
-          const req_nack = getRequest(CMD.CHALLENGE_NACK, uuid)
-          const req_err = getRequest(CMD.CHALLENGE_ERR, uuid)
+          const req_ack = getMessage(CMD.CHALLENGE_ACK, uuid)
+          const req_nack = getMessage(CMD.CHALLENGE_NACK, uuid)
+          const req_err = getMessage(CMD.CHALLENGE_ERR, uuid)
           if(req_ack) {
             // request approved
             try{
@@ -366,6 +392,7 @@ export default {
               req_ack.data = JSON.parse(CryptoJS.AES.decrypt(req_ack.data, auth.key).toString(CryptoJS.enc.Utf8))
               // challenge approved
               clearInterval(wait)
+              clearPendings(uuid)
               if(trace) console.log(`challenge_ack found: ${JSON.stringify(req_ack)}`)
               resolve(req_ack)
             } catch(e) {
@@ -374,10 +401,12 @@ export default {
           } else if(req_nack) {
             // request rejected
             clearInterval(wait)
+            clearPendings(uuid)
             reject(req_nack)
           } else if(req_err) {
             // request error
             clearInterval(wait)
+            clearPendings(uuid)
             // Decrypt received error message
             const error = CryptoJS.AES.decrypt(req_err.error, auth.key).toString(CryptoJS.enc.Utf8)
             reject(new Error(error))
@@ -386,6 +415,7 @@ export default {
         // check if request expired
         if(expire <= Date.now()) {
           clearInterval(wait)
+          if(uuid) clearPendings(uuid)
           reject(new Error("expired"))
         }
       },DELAY_CHECK_REQUESTS)
@@ -404,8 +434,8 @@ export default {
       // Wait for the reply from the HAS
       const wait = setInterval(() => {
         // Confirmation received, check if we got a request result
-        const req_ack = getRequest(CMD.ATTACH_ACK, uuid)
-        const req_nack = getRequest(CMD.ATTACH_NACK, uuid)
+        const req_ack = getMessage(CMD.ATTACH_ACK, uuid)
+        const req_nack = getMessage(CMD.ATTACH_NACK, uuid)
         if(req_ack) {
         // attach success
           clearInterval(wait)
