@@ -1,6 +1,6 @@
 {
     "name": "hive-auth-wrapper",
-    "version": "0.8.2",
+    "version": "0.8.3",
     "description": "Hive Authentication Services WebSocket Wrapper",
     "main": "has-wrapper.js",
     "author": "arcange",
