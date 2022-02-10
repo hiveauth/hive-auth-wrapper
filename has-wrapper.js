@@ -25,7 +25,6 @@ const CMD = {
     ERROR:          "error"
 }
 
-const DELAY_CLEAN_PENDINGS = 30 * 1000            // Addidional delay before discarding expired pending requests (in milliseconds)
 const DELAY_CHECK_WEBSOCKET = 250                 // Delay between checking WebSocket connection (in milliseconds)
 const DELAY_CHECK_REQUESTS = 250                  // Delay between checking HAS events (in milliseconds)
 const HAS_SERVER = "wss://hive-auth.arcange.eu/"  // Default HAS infrastructure host
@@ -37,16 +36,11 @@ const HAS_options = {
 }
 
 let HAS_connected = false
-let HAS_timeout = 60*1000 // default request expiration timeout - 60 seconds
+let HAS_timeout = 60*1000 // default request expiration timeout (60 seconds)
 
 let messages = []
-let pendings = []
 let wsHAS = undefined
 let trace = false
-
-function clearPendings(uuid=undefined) {
-  pendings = pendings.filter(o => o.uuid != uuid && o.expire + DELAY_CLEAN_PENDINGS >= Date.now())
-}
 
 function getMessage(type, uuid=undefined) {
   // Clean expired requests
@@ -117,7 +111,38 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function isConnected() {
+async function attach(uuid) {
+  return new Promise(async (resolve,reject) => {
+    assert(uuid && typeof(uuid)=="string","missing or invalid uuid")
+    // Send the attach request to the HAS
+    const payload = { cmd:CMD.ATTACH_REQ, uuid}
+    send(JSON.stringify(payload))
+    let expire = Date.now() + HAS_timeout
+    // Wait for the reply from the HAS
+    const wait = setInterval(() => {
+      // Confirmation received, check if we got a request result
+      const req_ack = getMessage(CMD.ATTACH_ACK, uuid)
+      const req_nack = getMessage(CMD.ATTACH_NACK, uuid)
+      if(req_ack) {
+      // attach success
+        clearInterval(wait)
+        if(trace) console.log(`attach_ack found: ${JSON.stringify(req_ack)}`)
+        resolve(req_ack)
+      } else if(req_nack) {
+        // attach failed
+        clearInterval(wait)
+        reject(req_nack)
+      }
+      // check if request expired
+      if(expire <= Date.now()) {
+        clearInterval(wait)
+        reject(new Error("expired"))
+      }
+    },DELAY_CHECK_REQUESTS)
+  })
+}
+
+async function checkConnection(uuid=undefined) {
   if ("WebSocket" in window) {
     // The browser support Websocket
     if(HAS_connected) {
@@ -125,12 +150,18 @@ async function isConnected() {
     }
     startWebsocket()
     if(!HAS_connected) {
+      // connection not completed yet, wait till ready
       do {
         await sleep(DELAY_CHECK_WEBSOCKET)
       } while(wsHAS && wsHAS.readyState==0) // 0 = Connecting
-      clearPendings()
-      for(pending of pendings) {
-        attach(pending.uuid)
+    }
+    if(HAS_connected && uuid) {
+      // WebSocket reconnected, try to attach pending request if any
+      try {
+        await attach(uuid) 
+        if(trace) console.log(`Request attached ${uuid}`)
+      } catch(e) {
+        return false
       }
     }
     return HAS_connected
@@ -173,7 +204,7 @@ export default {
   },
 
   connect: async function() {
-    return (await isConnected())
+    return (await checkConnection())
   },
 
   // auth is an object with the following properties:
@@ -194,7 +225,7 @@ export default {
       assert(app_data && app_data.name && typeof(app_data.name)=="string","missing or invalid app_data.name")
       assert(challenge_data && challenge_data.key_type && typeof(challenge_data.key_type)=="string","missing or invalid challenge_data.key_type")
       assert(challenge_data && challenge_data.challenge && typeof(challenge_data.challenge)=="string","missing or invalid challenge_data.challenge")
-      assert((await isConnected()),"not connected to server")
+      assert((await checkConnection()),"not connected to server")
 
       // initialize key to encrypt communication with PKSA
       const auth_key = auth.key || uuidv4()
@@ -210,59 +241,60 @@ export default {
       send(JSON.stringify(payload))
       let expire = Date.now() + HAS_timeout
       let uuid = undefined
-      const wait = setInterval(() => {
-        if(!uuid) {
-          const req = getMessage(CMD.AUTH_WAIT)
-          if(req) {
-            if(trace) console.log(`auth_wait found: ${JSON.stringify(req)}`)
-            uuid = req.uuid
-            expire = req.expire
-            // Add to pending requests
-            pendings.push({uuid:uuid,expire:expire})
-            // provide the PKSA encryption key the App for it to build the auth_payload
-            req.key = auth_key
-            // call app back to notify about pending request and authentication payload
-            if(cbWait) cbWait(req)
-          }
-        } else {
-          const req_ack = getMessage(CMD.AUTH_ACK, uuid)
-          const req_nack = getMessage(CMD.AUTH_NACK, uuid)
-          const req_err = getMessage(CMD.AUTH_ERR, uuid)
-          if(req_ack) {
-            try{
-                // Try to decrypt and parse payload data
-                req_ack.data = JSON.parse(CryptoJS.AES.decrypt(req_ack.data, auth_key).toString(CryptoJS.enc.Utf8))
-                // authentication approved
-                clearInterval(wait)
-                clearPendings(uuid)
-                if(trace) console.log(`auth_ack found: ${JSON.stringify(req_ack)}`)
-                // update credentials with PKSA token/expiration and PKSA enryption key
-                auth.token = req_ack.data.token
-                auth.expire = req_ack.data.expire
-                auth.key = auth_key
-                resolve(req_ack)
-              } catch(e) {
-                // Decryption failed - ignore message
-              }
-          } else if(req_nack) {
-            // validate uuid
-            if(uuid==CryptoJS.AES.decrypt(req_nack.data, auth_key).toString(CryptoJS.enc.Utf8)) {
-              // authentication rejected
-              clearInterval(wait)
-              clearPendings(uuid)
-              reject(req_nack)
+      let busy = false
+      const wait = setInterval(async () => {
+        if(!busy) {
+          busy = true
+          if(!uuid) {
+            const req = getMessage(CMD.AUTH_WAIT)
+            if(req) {
+              if(trace) console.log(`auth_wait found: ${JSON.stringify(req)}`)
+              uuid = req.uuid
+              expire = req.expire
+              // provide the PKSA encryption key the App for it to build the auth_payload
+              req.key = auth_key
+              // call app back to notify about pending request and authentication payload
+              if(cbWait) cbWait(req)
             }
-          } else if(req_err) {
-            // authentication error
-            clearInterval(wait)
-            clearPendings(uuid)
-            reject(req_err)
+          } else {
+            // Check if WebSocket is still connected (and optionally attach pending request)
+            await checkConnection(uuid)
+            const req_ack = getMessage(CMD.AUTH_ACK, uuid)
+            const req_nack = getMessage(CMD.AUTH_NACK, uuid)
+            const req_err = getMessage(CMD.AUTH_ERR, uuid)
+            if(req_ack) {
+              try{
+                  // Try to decrypt and parse payload data
+                  req_ack.data = JSON.parse(CryptoJS.AES.decrypt(req_ack.data, auth_key).toString(CryptoJS.enc.Utf8))
+                  // authentication approved
+                  clearInterval(wait)
+                  if(trace) console.log(`auth_ack found: ${JSON.stringify(req_ack)}`)
+                  // update credentials with PKSA token/expiration and PKSA enryption key
+                  auth.token = req_ack.data.token
+                  auth.expire = req_ack.data.expire
+                  auth.key = auth_key
+                  resolve(req_ack)
+                } catch(e) {
+                  // Decryption failed - ignore message
+                }
+            } else if(req_nack) {
+              // validate uuid
+              if(uuid==CryptoJS.AES.decrypt(req_nack.data, auth_key).toString(CryptoJS.enc.Utf8)) {
+                // authentication rejected
+                clearInterval(wait)
+                reject(req_nack)
+              }
+            } else if(req_err) {
+              // authentication error
+              clearInterval(wait)
+              reject(req_err)
+            }
           }
         }
+        busy = false
         // Check if authentication request has expired
         if(expire <= Date.now()) {
           clearInterval(wait)
-          if(uuid) clearPendings(uuid)
           reject(new Error("expired"))
         }
       },DELAY_CHECK_REQUESTS)
@@ -281,7 +313,7 @@ export default {
       assert(auth.token && typeof(auth.token)=="string", "missing or invalid token")
       assert(auth.key && typeof(auth.key)=="string", "missing or invalid encryption key")
       assert(ops && Array.isArray(ops) && ops.length>0, "missing or invalid ops")
-      assert((await isConnected()),"not connected to server")
+      assert((await checkConnection()),"not connected to server")
 
       // Encrypt the ops with the key we provided to the PKSA
       const data = CryptoJS.AES.encrypt(JSON.stringify({key_type:key_type, ops:ops, broadcast:true}),auth.key).toString()
@@ -290,51 +322,52 @@ export default {
       send(JSON.stringify(payload))
       let expire = Date.now() + HAS_timeout
       let uuid = undefined
+      let busy = false
       // Wait for the confirmation by the HAS
-      const wait = setInterval(() => {
-        if(!uuid) {
-          // We did not received the sign_wait confirmation yet from the HAS
-          // check if we got one
-          const req = getMessage(CMD.SIGN_WAIT)
-          if(req) {
-            // confirmation received
-            if(trace) console.log(`sign_wait found: ${JSON.stringify(req)}`)
-            uuid = req.uuid
-            expire = req.expire
-            // Add to pending requests
-            pendings.push({uuid:uuid,expire:expire})
-            // call back app to notify about pending request
-            if(cbWait) cbWait(req)
-          }
-        } else {
-          // Confirmation received, check if we got a request result
-          const req_ack = getMessage(CMD.SIGN_ACK, uuid)
-          const req_nack = getMessage(CMD.SIGN_NACK, uuid)
-          const req_err = getMessage(CMD.SIGN_ERR, uuid)
-          if(req_ack) {
-            // request approved
-            if(trace) console.log(`sign_ack found: ${JSON.stringify(req_ack)}`)
-            clearInterval(wait)
-            clearPendings(uuid)
-            resolve(req_ack)
-          } else if(req_nack) {
-            // request rejected
-            clearInterval(wait)
-            clearPendings(uuid)
-            reject(req_nack)
-          } else if(req_err) {
-            // request error
-            clearInterval(wait)
-            clearPendings(uuid)
-            // Decrypt received error message
-            const error = CryptoJS.AES.decrypt(req_err.error, auth.key).toString(CryptoJS.enc.Utf8)
-            reject(new Error(error))
+      const wait = setInterval(async () => {
+        if(!busy) {
+          busy = true
+          if(!uuid) {
+            // We did not received the sign_wait confirmation yet from the HAS
+            // check if we got one
+            const req = getMessage(CMD.SIGN_WAIT)
+            if(req) {
+              // confirmation received
+              if(trace) console.log(`sign_wait found: ${JSON.stringify(req)}`)
+              uuid = req.uuid
+              expire = req.expire
+              // call back app to notify about pending request
+              if(cbWait) cbWait(req)
+            }
+          } else {
+            // Check if WebSocket is still connected (and optionally attach pending request)
+            await checkConnection(uuid)
+            // Confirmation received, check if we got a request result
+            const req_ack = getMessage(CMD.SIGN_ACK, uuid)
+            const req_nack = getMessage(CMD.SIGN_NACK, uuid)
+            const req_err = getMessage(CMD.SIGN_ERR, uuid)
+            if(req_ack) {
+              // request approved
+              if(trace) console.log(`sign_ack found: ${JSON.stringify(req_ack)}`)
+              clearInterval(wait)
+              resolve(req_ack)
+            } else if(req_nack) {
+              // request rejected
+              clearInterval(wait)
+              reject(req_nack)
+            } else if(req_err) {
+              // request error
+              clearInterval(wait)
+              // Decrypt received error message
+              const error = CryptoJS.AES.decrypt(req_err.error, auth.key).toString(CryptoJS.enc.Utf8)
+              reject(new Error(error))
+            }
           }
         }
+        busy = false
         // check if request expired
         if(expire <= Date.now()) {
           clearInterval(wait)
-          if(uuid) clearPendings(uuid)
           reject(new Error("expired"))
         }
       },DELAY_CHECK_REQUESTS)
@@ -356,7 +389,7 @@ export default {
       assert(auth.key && typeof(auth.key)=="string", "missing or invalid encryption key")
       assert(challenge_data && challenge_data.key_type && typeof(challenge_data.key_type)=="string","missing or invalid challenge_data.key_type")
       assert(challenge_data && challenge_data.challenge && typeof(challenge_data.challenge)=="string","missing or invalid challenge_data.challenge")
-      assert((await isConnected()),"not connected to server")
+      assert((await checkConnection()),"not connected to server")
       // Encrypt the challenge data with the key we provided to the PKSA
       const data = CryptoJS.AES.encrypt(JSON.stringify(challenge_data),auth.key).toString()
       // Send the challenge request to the HAS
@@ -375,12 +408,12 @@ export default {
             if(trace) console.log(`challenge_wait found: ${JSON.stringify(req)}`)
             uuid = req.uuid
             expire = req.expire
-            // Add to pending requests
-            pendings.push({uuid:uuid,expire:expire})
             // call back app to notify about pending request
             if(cbWait) cbWait(req)
           }
         } else {
+          // Check if WebSocket is still connected (and optionally attach pending request)
+          checkConnection(uuid)
           // Confirmation received, check if we got a request result
           const req_ack = getMessage(CMD.CHALLENGE_ACK, uuid)
           const req_nack = getMessage(CMD.CHALLENGE_NACK, uuid)
@@ -392,7 +425,6 @@ export default {
               req_ack.data = JSON.parse(CryptoJS.AES.decrypt(req_ack.data, auth.key).toString(CryptoJS.enc.Utf8))
               // challenge approved
               clearInterval(wait)
-              clearPendings(uuid)
               if(trace) console.log(`challenge_ack found: ${JSON.stringify(req_ack)}`)
               resolve(req_ack)
             } catch(e) {
@@ -401,50 +433,14 @@ export default {
           } else if(req_nack) {
             // request rejected
             clearInterval(wait)
-            clearPendings(uuid)
             reject(req_nack)
           } else if(req_err) {
             // request error
             clearInterval(wait)
-            clearPendings(uuid)
             // Decrypt received error message
             const error = CryptoJS.AES.decrypt(req_err.error, auth.key).toString(CryptoJS.enc.Utf8)
             reject(new Error(error))
           }
-        }
-        // check if request expired
-        if(expire <= Date.now()) {
-          clearInterval(wait)
-          if(uuid) clearPendings(uuid)
-          reject(new Error("expired"))
-        }
-      },DELAY_CHECK_REQUESTS)
-    })
-  },
-  // uuid:string (required) - an existing request id
-  // cbWait is an (optional) callback method to notify the app about pending request
-  attach: function(uuid) {
-    return new Promise(async (resolve,reject) => {
-      assert(uuid && typeof(uuid)=="string","missing or invalid uuid")
-      assert((await isConnected()),"not connected to server")
-      // Send the attach request to the HAS
-      const payload = { cmd:CMD.ATTACH_REQ, uuid}
-      send(JSON.stringify(payload))
-      let expire = Date.now() + HAS_timeout
-      // Wait for the reply from the HAS
-      const wait = setInterval(() => {
-        // Confirmation received, check if we got a request result
-        const req_ack = getMessage(CMD.ATTACH_ACK, uuid)
-        const req_nack = getMessage(CMD.ATTACH_NACK, uuid)
-        if(req_ack) {
-        // attach success
-          clearInterval(wait)
-          if(trace) console.log(`attach_ack found: ${JSON.stringify(req_ack)}`)
-          resolve(req_ack)
-        } else if(req_nack) {
-          // attach failed
-          clearInterval(wait)
-          reject(req_nack)
         }
         // check if request expired
         if(expire <= Date.now()) {
