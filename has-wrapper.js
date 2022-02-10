@@ -397,51 +397,56 @@ export default {
       send(JSON.stringify(payload))
       let expire = Date.now() + HAS_timeout
       let uuid = undefined
+      let busy = false
       // Wait for the confirmation by the HAS
       const wait = setInterval(() => {
-        if(!uuid) {
-          // We did not received the challenge_wait confirmation yet from the HAS
-          // check if we got one
-          const req = getMessage(CMD.CHALLENGE_WAIT)
-          if(req) {
-            // confirmation received
-            if(trace) console.log(`challenge_wait found: ${JSON.stringify(req)}`)
-            uuid = req.uuid
-            expire = req.expire
-            // call back app to notify about pending request
-            if(cbWait) cbWait(req)
-          }
-        } else {
-          // Check if WebSocket is still connected (and optionally attach pending request)
-          checkConnection(uuid)
-          // Confirmation received, check if we got a request result
-          const req_ack = getMessage(CMD.CHALLENGE_ACK, uuid)
-          const req_nack = getMessage(CMD.CHALLENGE_NACK, uuid)
-          const req_err = getMessage(CMD.CHALLENGE_ERR, uuid)
-          if(req_ack) {
-            // request approved
-            try{
-              // Try to decrypt and parse payload data
-              req_ack.data = JSON.parse(CryptoJS.AES.decrypt(req_ack.data, auth.key).toString(CryptoJS.enc.Utf8))
-              // challenge approved
-              clearInterval(wait)
-              if(trace) console.log(`challenge_ack found: ${JSON.stringify(req_ack)}`)
-              resolve(req_ack)
-            } catch(e) {
-              // Decryption failed - ignore message
+        if(!busy) {
+          busy = true
+          if(!uuid) {
+            // We did not received the challenge_wait confirmation yet from the HAS
+            // check if we got one
+            const req = getMessage(CMD.CHALLENGE_WAIT)
+            if(req) {
+              // confirmation received
+              if(trace) console.log(`challenge_wait found: ${JSON.stringify(req)}`)
+              uuid = req.uuid
+              expire = req.expire
+              // call back app to notify about pending request
+              if(cbWait) cbWait(req)
             }
-          } else if(req_nack) {
-            // request rejected
-            clearInterval(wait)
-            reject(req_nack)
-          } else if(req_err) {
-            // request error
-            clearInterval(wait)
-            // Decrypt received error message
-            const error = CryptoJS.AES.decrypt(req_err.error, auth.key).toString(CryptoJS.enc.Utf8)
-            reject(new Error(error))
+          } else {
+            // Check if WebSocket is still connected (and optionally attach pending request)
+            await checkConnection(uuid)
+            // Confirmation received, check if we got a request result
+            const req_ack = getMessage(CMD.CHALLENGE_ACK, uuid)
+            const req_nack = getMessage(CMD.CHALLENGE_NACK, uuid)
+            const req_err = getMessage(CMD.CHALLENGE_ERR, uuid)
+            if(req_ack) {
+              // request approved
+              try{
+                // Try to decrypt and parse payload data
+                req_ack.data = JSON.parse(CryptoJS.AES.decrypt(req_ack.data, auth.key).toString(CryptoJS.enc.Utf8))
+                // challenge approved
+                clearInterval(wait)
+                if(trace) console.log(`challenge_ack found: ${JSON.stringify(req_ack)}`)
+                resolve(req_ack)
+              } catch(e) {
+                // Decryption failed - ignore message
+              }
+            } else if(req_nack) {
+              // request rejected
+              clearInterval(wait)
+              reject(req_nack)
+            } else if(req_err) {
+              // request error
+              clearInterval(wait)
+              // Decrypt received error message
+              const error = CryptoJS.AES.decrypt(req_err.error, auth.key).toString(CryptoJS.enc.Utf8)
+              reject(new Error(error))
+            }
           }
         }
+        busy = false
         // check if request expired
         if(expire <= Date.now()) {
           clearInterval(wait)
