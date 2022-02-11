@@ -399,7 +399,7 @@ export default {
       let uuid = undefined
       let busy = false
       // Wait for the confirmation by the HAS
-      const wait = setInterval(() => {
+      const wait = setInterval(async () => {
         if(!busy) {
           busy = true
           if(!uuid) {
