@@ -148,7 +148,9 @@ async function checkConnection(uuid=undefined) {
     if(HAS_connected) {
       return true
     }
-    startWebsocket()
+    if(!wsHAS) {
+      startWebsocket()
+    }
     if(!HAS_connected) {
       // connection not completed yet, wait till ready
       do {
