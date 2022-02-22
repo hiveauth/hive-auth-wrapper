@@ -209,18 +209,22 @@ export default {
     return (await checkConnection())
   },
 
-  // auth is an object with the following properties:
-  // - username: string (required)
-  // - token: string (optional)
-  // - key: string (optional)
-  // app_data is an object with the following properties
-  // - name: string (required)
-  // - description: string (optional)
-  // - icon: string (optional)
-  // challenge_data is an (optional) object with the following properties
-  // - key_type: string
-  // - challenge: string
-  // cbWait is an (optional) callback method to notify the app about pending request
+  /**
+   * Sends an authentication request to the server
+   * @param {Object} auth
+   * @param {string} auth.username
+   * @param {string=} auth.token
+   * @param {number=} auth.expire
+   * @param {string=} auth.key
+   * @param {Object} app_data
+   * @param {string} app_data.name - Application name
+   * @param {string} app_data.description - Application description
+   * @param {string} app_data.icon - URL of application icon
+   * @param {Object} challenge_data
+   * @param {string} challenge_data.key_type
+   * @param {Object} challenge_data.challenge
+   * @param {Object} cbWait - (optional) callback method to notify the app about pending request
+   */
   authenticate: function(auth, app_data, challenge_data=undefined, cbWait=undefined) {
     return new Promise(async (resolve,reject) => {
       assert(auth && auth.username && typeof(auth.username)=="string","missing or invalid auth.username")
@@ -249,14 +253,18 @@ export default {
           busy = true
           if(!uuid) {
             const req = getMessage(CMD.AUTH_WAIT)
+            const err = getMessage(CMD.ERROR)
             if(req) {
               if(trace) console.log(`auth_wait found: ${JSON.stringify(req)}`)
               uuid = req.uuid
               expire = req.expire
-              // provide the PKSA encryption key the App for it to build the auth_payload
+              // provide the PKSA encryption key to the App for it to build the auth_payload
               req.key = auth_key
               // call app back to notify about pending request and authentication payload
               if(cbWait) cbWait(req)
+            } else if(err) {
+              if(trace) console.log(`error found: ${JSON.stringify(err)}`)
+              reject(err)
             }
           } else {
             // Check if WebSocket is still connected (and optionally attach pending request)
@@ -303,11 +311,17 @@ export default {
     })
   },
 
-  // auth is an object with the following properties:
-  // - username: string (required)
-  // - token: string (required)
-  // - key: string (required)
-  // cbWait is an (optional) callback method to notify the app about pending request
+  /**
+   * Sends a broadcast request to the server
+   * @param {Object} auth
+   * @param {string} auth.username
+   * @param {string=} auth.token
+   * @param {number=} auth.expire
+   * @param {string=} auth.key
+   * @param {string} key_type
+   * @param {Array} ops
+   * @param {Object} cbWait - (optional) callback method to notify the app about pending request
+   */
   broadcast: function(auth, key_type, ops, cbWait=undefined) {
     return new Promise(async (resolve,reject) => {
       assert(auth,"missing auth")
@@ -333,6 +347,7 @@ export default {
             // We did not received the sign_wait confirmation yet from the HAS
             // check if we got one
             const req = getMessage(CMD.SIGN_WAIT)
+            const err = getMessage(CMD.ERROR)
             if(req) {
               // confirmation received
               if(trace) console.log(`sign_wait found: ${JSON.stringify(req)}`)
@@ -340,6 +355,9 @@ export default {
               expire = req.expire
               // call back app to notify about pending request
               if(cbWait) cbWait(req)
+            } else if(err) {
+              if(trace) console.log(`error found: ${JSON.stringify(err)}`)
+              reject(err)
             }
           } else {
             // Check if WebSocket is still connected (and optionally attach pending request)
@@ -375,14 +393,18 @@ export default {
       },DELAY_CHECK_REQUESTS)
     })
   },
-  // auth is an object with the following properties:
-  // - username: string (required)
-  // - token: string (required)
-  // - key: string (required)
-  // challenge_data is an object with the following properties
-  // - key_type: string
-  // - challenge: string
-  // cbWait is an (optional) callback method to notify the app about pending request
+  /**
+   * Sends a challenge request to the server
+   * @param {Object} auth
+   * @param {string} auth.username
+   * @param {string=} auth.token
+   * @param {number=} auth.expire
+   * @param {string=} auth.key
+   * @param {Object} challenge_data
+   * @param {string} challenge_data.key_type
+   * @param {Object} challenge_data.challenge
+   * @param {Object} cbWait - (optional) callback method to notify the app about pending request
+   */
   challenge: function(auth, challenge_data, cbWait=undefined) {
     return new Promise(async (resolve,reject) => {
       assert(auth,"missing auth")
@@ -408,6 +430,7 @@ export default {
             // We did not received the challenge_wait confirmation yet from the HAS
             // check if we got one
             const req = getMessage(CMD.CHALLENGE_WAIT)
+            const err = getMessage(CMD.ERROR)
             if(req) {
               // confirmation received
               if(trace) console.log(`challenge_wait found: ${JSON.stringify(req)}`)
@@ -415,6 +438,9 @@ export default {
               expire = req.expire
               // call back app to notify about pending request
               if(cbWait) cbWait(req)
+            } else if(err) {
+              if(trace) console.log(`error found: ${JSON.stringify(err)}`)
+              reject(err)
             }
           } else {
             // Check if WebSocket is still connected (and optionally attach pending request)
