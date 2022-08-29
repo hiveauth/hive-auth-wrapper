@@ -52,12 +52,24 @@ The `auth.token` and `auth.expire` will be updated if the authentication succeed
 
 If the app already own an `auth` object with a `token` which has not expired, it can be reused without calling `authenticate()` again.
 
+When authenticating a user, the app can optionaly request the PKSA to sign a challenge using one of the posting, active or memo key.
+
 ```
 if(auth.token && auth.expire > Date.now()) {
     // token exists and is still valid - no need to login again
     resolve(true)
 } else {
-    HAS.authenticate(auth, APP_META, (evt) => {
+    let challenge_data = undefined
+    // optional - create a challenge to sign with the posting key
+    challenge_data = {
+        key_type: "posting",
+        challenge: JSON.stringify({
+            login: auth.username,
+            ts: Date.now(),
+        })
+    }
+
+    HAS.authenticate(auth, APP_META, challenge_data, (evt) => {
         console.log(evt)    // process auth_wait
     }))
     .then(res => resolve(res))  // Authentication request approved
@@ -84,8 +96,14 @@ Apps may want to validate an account by asking it to sign a predefined text stri
 
 ```
 try {
-    const challenge = JSON.stringify({login:auth.username,ts:Date.now()})
-    const res = await HAS.challenge(auth, "posting",challenge)
+    const challenge_data = {
+        key_type: "posting",
+        challenge: JSON.stringify({
+            login: auth.username,
+            ts: Date.now(),
+        })
+    }
+    const res = await HAS.challenge(auth, challenge_data)
     // Validate signature against account public key
     const sig = ecc.Signature.fromHex(resC.data.challenge)
     const buf = ecc.hash.sha256(challenge, null, 0)

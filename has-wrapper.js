@@ -220,17 +220,17 @@ export default {
    * @param {string} app_data.name - Application name
    * @param {string} app_data.description - Application description
    * @param {string} app_data.icon - URL of application icon
-   * @param {Object} challenge_data
-   * @param {string} challenge_data.key_type
-   * @param {Object} challenge_data.challenge
+   * @param {Object} challenge_data - (optional)
+   * @param {string} challenge_data.key_type - key type required to sign the challenge (posting, acive, memo)
+   * @param {string} challenge_data.challenge - a string to be signed
    * @param {Object} cbWait - (optional) callback method to notify the app about pending request
    */
   authenticate: function(auth, app_data, challenge_data=undefined, cbWait=undefined) {
     return new Promise(async (resolve,reject) => {
       assert(auth && auth.username && typeof(auth.username)=="string","missing or invalid auth.username")
       assert(app_data && app_data.name && typeof(app_data.name)=="string","missing or invalid app_data.name")
-      assert(challenge_data && challenge_data.key_type && typeof(challenge_data.key_type)=="string","missing or invalid challenge_data.key_type")
-      assert(challenge_data && challenge_data.challenge && typeof(challenge_data.challenge)=="string","missing or invalid challenge_data.challenge")
+      assert(!challenge_data || (challenge_data.key_type && typeof(challenge_data.key_type)=="string"),"missing or invalid challenge_data.key_type")
+      assert(!challenge_data || (challenge_data.challenge && typeof(challenge_data.challenge)=="string"),"missing or invalid challenge_data.challenge")
       assert((await checkConnection()),"not connected to server")
 
       // initialize key to encrypt communication with PKSA
@@ -401,8 +401,8 @@ export default {
    * @param {number=} auth.expire
    * @param {string=} auth.key
    * @param {Object} challenge_data
-   * @param {string} challenge_data.key_type
-   * @param {Object} challenge_data.challenge
+   * @param {string} challenge_data.key_type - key type required to sign the challenge (posting, acive, memo)
+   * @param {string} challenge_data.challenge - a string to be signed
    * @param {Object} cbWait - (optional) callback method to notify the app about pending request
    */
   challenge: function(auth, challenge_data, cbWait=undefined) {
