@@ -47,12 +47,12 @@ NOTE: `auth_key_secret` should be defined only if you are running your own PKSA 
 
 #### Authentication
 
-When the app perform it's first authentication, it can use a `auth` object with undefined `token` and `expire` properties.
+When the app performs its first authentication, it can use a `auth` object with undefined `token` and `expire` properties.
 The `auth.token` and `auth.expire` will be updated if the authentication succeeds.
 
 If the app already own an `auth` object with a `token` which has not expired, it can be reused without calling `authenticate()` again.
 
-When authenticating a user, the app can optionaly request the PKSA to sign a challenge using one of the posting, active or memo key.
+When authenticating a user, the app can optionaly request the PKSA to sign a challenge using one of the posting, active or memo keys.
 
 ```
 if(auth.token && auth.expire > Date.now()) {
