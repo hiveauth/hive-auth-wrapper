@@ -60,7 +60,7 @@ if(auth.token && auth.expire > Date.now()) {
     resolve(true)
 } else {
     let challenge_data = undefined
-    // optional - create a challenge to sign with the posting key
+    // optional - create a challenge to be signed with the posting key
     challenge_data = {
         key_type: "posting",
         challenge: JSON.stringify({
@@ -71,7 +71,7 @@ if(auth.token && auth.expire > Date.now()) {
 
     HAS.authenticate(auth, APP_META, challenge_data, (evt) => {
         console.log(evt)    // process auth_wait
-    }))
+    })
     .then(res => resolve(res))  // Authentication request approved
     .catch(err => reject(err))  // Authentication request rejected or error occured
 }
