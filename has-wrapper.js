@@ -1,6 +1,6 @@
-const { v4: uuidv4 } = require("uuid")
-const CryptoJS = require("crypto-js")
-const assert = require("assert")
+import { v4 as uuidv4 } from "uuid";
+import CryptoJS from "crypto-js"
+import assert from "assert"
 
 const CMD = {
     CONNECTED:      "connected",
@@ -29,7 +29,7 @@ const DELAY_CHECK_WEBSOCKET = 250                 // Delay between checking WebS
 const DELAY_CHECK_REQUESTS = 250                  // Delay between checking HAS events (in milliseconds)
 const HAS_SERVER = "wss://hive-auth.arcange.eu/"  // Default HAS infrastructure host
 
-const HAS_PROTOCOL = 0.8
+const HAS_PROTOCOLS = [0.8, 1]                    // Supported protocols
 const HAS_options = {
   host: HAS_SERVER,
   auth_key_secret: undefined
@@ -65,12 +65,12 @@ function startWebsocket() {
   wsHAS.onmessage = function(event) { 
     if(trace) console.log(`[RECV] ${event.data}`)
     const message = typeof(event.data)=="string" ? JSON.parse(event.data) : event.data
-    // Process HAS <-> App protocol
+    // Process HAS <-> App messages
     if(message.cmd) {
       switch(message.cmd) {
         case CMD.CONNECTED:
           HAS_timeout = message.timeout * 1000
-          if(message.protocol > HAS_PROTOCOL) {
+          if(!HAS_PROTOCOLS.includes(message.protocol)) {
             console.error("unsupported HAS protocol")
           }
           break
@@ -173,9 +173,8 @@ async function checkConnection(uuid=undefined) {
 }
 
 export class Auth {
-    constructor(username, token=undefined, expire=undefined, key=undefined) {
+    constructor(username, expire=undefined, key=undefined) {
       this.username = username
-      this.token = token
       this.expire = expire
       this.key = key
     }
@@ -213,7 +212,9 @@ export default {
    * Sends an authentication request to the server
    * @param {Object} auth
    * @param {string} auth.username
-   * @param {string=} auth.token
+   * TODO - Remove "token" when protocol v0 is deprecated
+   * @param {string=} auth.token - DEPRECATED since protocol v1
+   * TODO - 
    * @param {number=} auth.expire
    * @param {string=} auth.key
    * @param {Object} app_data
@@ -236,10 +237,14 @@ export default {
 
         // initialize key to encrypt communication with PKSA
         const auth_key = auth.key || uuidv4()
-        const data = CryptoJS.AES.encrypt(JSON.stringify({token:auth.token, app:app_data, challenge:challenge_data}),auth_key).toString()
-        const payload = { cmd:CMD.AUTH_REQ, account:auth.username, token:auth.token, data:data}
-        // NOTE:    In "service" mode, we can pass the encryption key to the PKSA with the auth_req to create and initialize an access token
-        //          If the PKSA process the "auth_req", then it can bypass the offline reading of the encryption key
+        const data = CryptoJS.AES.encrypt(JSON.stringify({app:app_data, challenge:challenge_data
+          // TODO - Remove "token" when protocol v0 is deprecated
+          ,token:auth.token // DEPRECATED since protocol v1
+          // TODO
+          }),auth_key).toString()
+        const payload = { cmd:CMD.AUTH_REQ, account:auth.username, data:data}
+        // NOTE:    If the PKSA runs in "service" mode, we can pass the encryption key with the auth_req
+        //          When the PKSA will process the "auth_req", it will bypass the offline reading of the encryption key
         if(HAS_options.auth_key_secret) {
           // Encrypt auth_key before sending it to the HAS
           payload.auth_key = CryptoJS.AES.encrypt(auth_key,HAS_options.auth_key_secret).toString()
@@ -280,8 +285,10 @@ export default {
                     // authentication approved
                     clearInterval(wait)
                     if(trace) console.log(`auth_ack found: ${JSON.stringify(req_ack)}`)
-                    // update credentials with PKSA token/expiration and PKSA enryption key
-                    auth.token = req_ack.data.token
+                    // update credentials with the PKSA expiration and encryption key
+                    // TODO - Remove "token" when protocol v0 is deprecated
+                    auth.token = req_ack.data.token // DEPRECATED since protocol v1
+                    // TODO
                     auth.expire = req_ack.data.expire
                     auth.key = auth_key
                     resolve(req_ack)
@@ -319,7 +326,9 @@ export default {
    * Sends a broadcast request to the server
    * @param {Object} auth
    * @param {string} auth.username
-   * @param {string=} auth.token
+   * TODO - Remove "token" when protocol v0 is deprecated
+   * @param {string=} auth.token - DEPRECATED since protocol v1
+   * TODO - 
    * @param {number=} auth.expire
    * @param {string=} auth.key
    * @param {string} key_type
@@ -330,15 +339,18 @@ export default {
     return new Promise(async (resolve,reject) => {
       assert(auth,"missing auth")
       assert(auth.username && typeof(auth.username)=="string","missing or invalid username")
-      assert(auth.token && typeof(auth.token)=="string", "missing or invalid token")
       assert(auth.key && typeof(auth.key)=="string", "missing or invalid encryption key")
       assert(ops && Array.isArray(ops) && ops.length>0, "missing or invalid ops")
       assert((await checkConnection()),"not connected to server")
 
       // Encrypt the ops with the key we provided to the PKSA
-      const data = CryptoJS.AES.encrypt(JSON.stringify({key_type:key_type, ops:ops, broadcast:true}),auth.key).toString()
+      const data = CryptoJS.AES.encrypt(JSON.stringify({key_type:key_type, ops:ops, broadcast:true, nonce:Date.now()}),auth.key).toString()
       // Send the sign request to the HAS
-      const payload = { cmd:CMD.SIGN_REQ, account:auth.username, token:auth.token, data:data}
+      const payload = { cmd:CMD.SIGN_REQ, account:auth.username, data:data
+        // TODO - Remove "token" when protocol v0 is deprecated
+        ,token: auth.token// - DEPRECATED since protocol v1
+        // TODO
+      }
       send(JSON.stringify(payload))
       let expire = Date.now() + HAS_timeout
       let uuid = undefined
@@ -401,7 +413,9 @@ export default {
    * Sends a challenge request to the server
    * @param {Object} auth
    * @param {string} auth.username
-   * @param {string=} auth.token
+   * TODO - Remove "token" when protocol v0 is deprecated
+   * @param {string=} auth.token - DEPRECATED since protocol v1
+   * TODO - 
    * @param {number=} auth.expire
    * @param {string=} auth.key
    * @param {Object} challenge_data
@@ -413,7 +427,6 @@ export default {
     return new Promise(async (resolve,reject) => {
       assert(auth,"missing auth")
       assert(auth.username && typeof(auth.username)=="string","missing or invalid username")
-      assert(auth.token && typeof(auth.token)=="string", "missing or invalid token")
       assert(auth.key && typeof(auth.key)=="string", "missing or invalid encryption key")
       assert(challenge_data && challenge_data.key_type && typeof(challenge_data.key_type)=="string","missing or invalid challenge_data.key_type")
       assert(challenge_data && challenge_data.challenge && typeof(challenge_data.challenge)=="string","missing or invalid challenge_data.challenge")
@@ -421,7 +434,11 @@ export default {
       // Encrypt the challenge data with the key we provided to the PKSA
       const data = CryptoJS.AES.encrypt(JSON.stringify(challenge_data),auth.key).toString()
       // Send the challenge request to the HAS
-      const payload = { cmd:CMD.CHALLENGE_REQ, account:auth.username, token:auth.token, data:data}
+      const payload = { cmd:CMD.CHALLENGE_REQ, account:auth.username, data:data
+        // TODO - Remove "token" when protocol v0 is deprecated
+        ,token: auth.token// - DEPRECATED since protocol v1
+        // TODO
+      }
       send(JSON.stringify(payload))
       let expire = Date.now() + HAS_timeout
       let uuid = undefined
